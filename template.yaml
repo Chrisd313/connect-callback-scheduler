@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Amazon Connect callback scheduler
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, test, prod]
+    Default: dev
+  ConnectInstanceId:
+    Type: String
+  OutboundContactFlowId:
+    Type: String
+  DefaultCallbackDelayMinutes:
+    Type: Number
+    Default: 15
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 6
+    Tracing: Active
+    Environment:
+      Variables:
+        CALLBACKS_TABLE: !Ref CallbacksTable
+        CONNECT_INSTANCE_ID: !Ref ConnectInstanceId
+        OUTBOUND_CONTACT_FLOW_ID: !Ref OutboundContactFlowId
+        SCHEDULE_GROUP_NAME: !Ref CallbackScheduleGroup
+        DEFAULT_CALLBACK_DELAY_MINUTES: !Ref DefaultCallbackDelayMinutes
+        RECORD_RETENTION_DAYS: "30"
+
+Resources:
+  CallbacksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "connect-callbacks-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: callbackId
+          AttributeType: S
+        - AttributeName: sourceContactId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: callbackId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: bySourceContactId
+          KeySchema:
+            - AttributeName: sourceContactId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  CallbackScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: !Sub "connect-callbacks-${Environment}"
+
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-dispatch
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt DispatchCallbackFunction.Arn
+
+  CreateCallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "connect-create-callback-${Environment}"
+      Handler: dist/src/handlers/createCallback.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          DISPATCH_FUNCTION_ARN: !GetAtt DispatchCallbackFunction.Arn
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CallbacksTable
+        - Statement:
+            - Effect: Allow
+              Action: scheduler:CreateSchedule
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${CallbackScheduleGroup}/*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerInvokeRole.Arn
+
+  CreateCallbackConnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CreateCallbackFunction
+      Principal: connect.amazonaws.com
+      SourceArn: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}"
+
+  DispatchCallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "connect-dispatch-callback-${Environment}"
+      Handler: dist/src/handlers/dispatchCallback.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          # Not used by dispatch, but loadConfig requires them.
+          DISPATCH_FUNCTION_ARN: "n/a"
+          SCHEDULER_ROLE_ARN: "n/a"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CallbacksTable
+        - Statement:
+            - Effect: Allow
+              Action: connect:StartOutboundVoiceContact
+              Resource: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}/contact/*"
+
+Outputs:
+  CreateCallbackFunctionArn:
+    Value: !GetAtt CreateCallbackFunction.Arn
+  CallbacksTableName:
+    Value: !Ref CallbacksTable
