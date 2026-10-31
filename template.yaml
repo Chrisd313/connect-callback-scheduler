@@ -14,6 +14,34 @@ Parameters:
   DefaultCallbackDelayMinutes:
     Type: Number
     Default: 15
+  MaxBookingDaysAhead:
+    Type: Number
+    Default: 7
+    Description: Furthest ahead a customer may book a preferred callback time.
+
+  # Callback hours. Leave any of these empty to use the defaults compiled into
+  # src/lib/defaultCallbackHours.ts. Values are validated when the function starts;
+  # a bad value fails every invocation with a clear error rather than mis-scheduling.
+  CallbackHours:
+    Type: String
+    Default: ""
+    Description: >-
+      Weekly hours in contact-centre local time, e.g. "mon-fri=08:00-20:00,sat=09:00-13:00".
+      Days not listed are closed.
+  CallbackClosedDates:
+    Type: String
+    Default: ""
+    Description: >-
+      Comma-separated YYYY-MM-DD dates we are closed (bank holidays). Replaces the built-in
+      list entirely, so include every year still in scope.
+  CallbackTimeZone:
+    Type: String
+    Default: ""
+    Description: IANA time zone the hours are expressed in. Defaults to Europe/London.
+  CallbackClosingBufferMinutes:
+    Type: String
+    Default: ""
+    Description: Minutes before close during which no callback is scheduled. Defaults to 15.
 
 Globals:
   Function:
@@ -42,6 +70,10 @@ Resources:
           AttributeType: S
         - AttributeName: sourceContactId
           AttributeType: S
+        - AttributeName: phoneNumber
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
       KeySchema:
         - AttributeName: callbackId
           KeyType: HASH
@@ -50,6 +82,17 @@ Resources:
           KeySchema:
             - AttributeName: sourceContactId
               KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        # cancelCallback looks up pending callbacks by caller number on every inbound
+        # call that reaches the menu. Keying on phoneNumber + status means the query
+        # reads only the SCHEDULED rows for that number.
+        - IndexName: byPhoneNumberStatus
+          KeySchema:
+            - AttributeName: phoneNumber
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
       TimeToLiveSpecification:
@@ -91,6 +134,11 @@ Resources:
         Variables:
           DISPATCH_FUNCTION_ARN: !GetAtt DispatchCallbackFunction.Arn
           SCHEDULER_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
+          MAX_BOOKING_DAYS_AHEAD: !Ref MaxBookingDaysAhead
+          CALLBACK_HOURS: !Ref CallbackHours
+          CALLBACK_CLOSED_DATES: !Ref CallbackClosedDates
+          CALLBACK_TIMEZONE: !Ref CallbackTimeZone
+          CALLBACK_CLOSING_BUFFER_MINUTES: !Ref CallbackClosingBufferMinutes
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref CallbacksTable
@@ -107,6 +155,34 @@ Resources:
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref CreateCallbackFunction
+      Principal: connect.amazonaws.com
+      SourceArn: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}"
+
+  CancelCallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "connect-cancel-callback-${Environment}"
+      Handler: dist/src/handlers/cancelCallback.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          # Not used by cancel, but loadConfig requires them.
+          DISPATCH_FUNCTION_ARN: "n/a"
+          SCHEDULER_ROLE_ARN: "n/a"
+      Policies:
+        # Covers the table and its indexes (Query on byPhoneNumberStatus, UpdateItem on the table).
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CallbacksTable
+        - Statement:
+            - Effect: Allow
+              Action: scheduler:DeleteSchedule
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${CallbackScheduleGroup}/*"
+
+  CancelCallbackConnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CancelCallbackFunction
       Principal: connect.amazonaws.com
       SourceArn: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}"
 
@@ -132,5 +208,7 @@ Resources:
 Outputs:
   CreateCallbackFunctionArn:
     Value: !GetAtt CreateCallbackFunction.Arn
+  CancelCallbackFunctionArn:
+    Value: !GetAtt CancelCallbackFunction.Arn
   CallbacksTableName:
     Value: !Ref CallbacksTable

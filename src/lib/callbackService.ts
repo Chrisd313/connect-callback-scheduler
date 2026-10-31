@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { CallbackHours } from "./callbackHours.js";
 import { resolveCallbackTime } from "./callbackTime.js";
+import { formatForReadback } from "./localTime.js";
 import { log, maskPhone } from "./logger.js";
 import type { CallbackRepository } from "./repository.js";
 import type { CallbackScheduler } from "./scheduler.js";
@@ -17,6 +19,9 @@ export interface CallbackServiceDeps {
   repository: CallbackRepository;
   scheduler: CallbackScheduler;
   defaultCallbackDelayMinutes: number;
+  /** Preferred times further ahead than this are rejected. */
+  maxBookingDaysAhead: number;
+  callbackHours: CallbackHours;
   recordRetentionDays: number;
   clock?: () => Date;
   idGenerator?: () => string;
@@ -45,13 +50,20 @@ export class CallbackService {
       return {
         callbackId: existing.callbackId,
         scheduledFor: existing.scheduledFor,
+        scheduledForLocal: this.toLocal(new Date(existing.scheduledFor)),
         alreadyExisted: true,
       };
     }
 
     const phoneNumber = normaliseUkPhoneNumber(input.phoneNumber);
     const preferred = parsePreferredTime(input.preferredTime, now);
-    const scheduledFor = resolveCallbackTime(now, preferred, this.deps.defaultCallbackDelayMinutes);
+    const scheduledFor = resolveCallbackTime({
+      now,
+      preferredTime: preferred,
+      defaultDelayMinutes: this.deps.defaultCallbackDelayMinutes,
+      maxDaysAhead: this.deps.maxBookingDaysAhead,
+      hours: this.deps.callbackHours,
+    });
 
     const callbackId = this.idGenerator();
     const record: CallbackRecord = {
@@ -76,6 +88,15 @@ export class CallbackService {
       scheduledFor: record.scheduledFor,
     });
 
-    return { callbackId, scheduledFor: record.scheduledFor, alreadyExisted: false };
+    return {
+      callbackId,
+      scheduledFor: record.scheduledFor,
+      scheduledForLocal: this.toLocal(scheduledFor),
+      alreadyExisted: false,
+    };
+  }
+
+  private toLocal(when: Date): string {
+    return formatForReadback(when, this.deps.callbackHours.timeZone);
   }
 }

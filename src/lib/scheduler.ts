@@ -1,7 +1,9 @@
 import {
   ActionAfterCompletion,
   CreateScheduleCommand,
+  DeleteScheduleCommand,
   FlexibleTimeWindowMode,
+  ResourceNotFoundException,
   SchedulerClient,
 } from "@aws-sdk/client-scheduler";
 import { toSchedulerAtExpression } from "./callbackTime.js";
@@ -42,5 +44,24 @@ export class CallbackScheduler {
         },
       }),
     );
+  }
+
+  /**
+   * Deletes the one-time schedule for a callback. Returns false if it had already gone,
+   * which is normal: schedules delete themselves after firing (ActionAfterCompletion).
+   */
+  async cancelDispatch(callbackId: string): Promise<boolean> {
+    try {
+      await this.client.send(
+        new DeleteScheduleCommand({
+          Name: CallbackScheduler.scheduleName(callbackId),
+          GroupName: this.target.scheduleGroupName,
+        }),
+      );
+      return true;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return false;
+      throw err;
+    }
   }
 }

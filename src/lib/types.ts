@@ -19,7 +19,10 @@ export interface CallbackRecord {
 
 export interface CreateCallbackResult {
   callbackId: string;
+  /** ISO-8601 UTC. */
   scheduledFor: string;
+  /** Contact-centre local time for text-to-speech readback, e.g. "Monday 2 November at 08:00". */
+  scheduledForLocal: string;
   alreadyExisted: boolean;
 }
 

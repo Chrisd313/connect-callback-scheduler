@@ -1,7 +1,15 @@
 export class ValidationError extends Error {
-  constructor(message: string) {
+  /**
+   * Optional machine-readable reason for the contact flow to branch on
+   * (e.g. OUTSIDE_CALLBACK_HOURS). When absent the flow receives `message`,
+   * which is how the pre-existing validation failures are reported.
+   */
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "ValidationError";
+    this.code = code;
   }
 }
 

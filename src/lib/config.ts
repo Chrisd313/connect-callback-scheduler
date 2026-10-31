@@ -1,3 +1,6 @@
+import type { CallbackHours } from "./callbackHours.js";
+import { callbackHoursFromEnv } from "./callbackHoursConfig.js";
+
 export interface AppConfig {
   tableName: string;
   connectInstanceId: string;
@@ -7,6 +10,10 @@ export interface AppConfig {
   scheduleGroupName: string;
   /** Minutes to wait before calling back when the customer doesn't request a specific time. */
   defaultCallbackDelayMinutes: number;
+  /** Furthest ahead a customer may book a preferred callback time. */
+  maxBookingDaysAhead: number;
+  /** When agents are available to take callbacks. See callbackHoursFromEnv for the variables. */
+  callbackHours: CallbackHours;
   /** Records are kept for this many days after creation, then DynamoDB TTL removes them. */
   recordRetentionDays: number;
 }
@@ -38,6 +45,8 @@ export function loadConfig(): AppConfig {
     schedulerRoleArn: required("SCHEDULER_ROLE_ARN"),
     scheduleGroupName: process.env.SCHEDULE_GROUP_NAME ?? "connect-callbacks",
     defaultCallbackDelayMinutes: numberOr("DEFAULT_CALLBACK_DELAY_MINUTES", 15),
+    maxBookingDaysAhead: numberOr("MAX_BOOKING_DAYS_AHEAD", 7),
+    callbackHours: callbackHoursFromEnv(),
     recordRetentionDays: numberOr("RECORD_RETENTION_DAYS", 30),
   };
 }

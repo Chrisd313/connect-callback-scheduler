@@ -10,6 +10,7 @@ import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import type { CallbackRecord, CallbackStatus } from "./types.js";
 
 const SOURCE_CONTACT_INDEX = "bySourceContactId";
+const PHONE_STATUS_INDEX = "byPhoneNumberStatus";
 
 export class CallbackRepository {
   constructor(
@@ -35,6 +36,33 @@ export class CallbackRepository {
       }),
     );
     return result.Items?.[0] as CallbackRecord | undefined;
+  }
+
+  /**
+   * All SCHEDULED callbacks for an E.164 phone number. Uses the byPhoneNumberStatus index
+   * (phoneNumber + status) so only matching rows are read; this runs on every inbound call
+   * that reaches the menu. Callers must normalise the number first.
+   */
+  async findScheduledByPhoneNumber(phoneNumber: string): Promise<CallbackRecord[]> {
+    const records: CallbackRecord[] = [];
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+
+    do {
+      const result = await this.doc.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          IndexName: PHONE_STATUS_INDEX,
+          KeyConditionExpression: "phoneNumber = :p AND #status = :scheduled",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: { ":p": phoneNumber, ":scheduled": "SCHEDULED" },
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+      records.push(...((result.Items ?? []) as CallbackRecord[]));
+      exclusiveStartKey = result.LastEvaluatedKey;
+    } while (exclusiveStartKey);
+
+    return records;
   }
 
   /** Inserts a new record. Throws if the callbackId already exists. */

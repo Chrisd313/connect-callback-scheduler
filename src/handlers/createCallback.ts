@@ -19,6 +19,8 @@ function getService(): CallbackService {
         scheduleGroupName: config.scheduleGroupName,
       }),
       defaultCallbackDelayMinutes: config.defaultCallbackDelayMinutes,
+      maxBookingDaysAhead: config.maxBookingDaysAhead,
+      callbackHours: config.callbackHours,
       recordRetentionDays: config.recordRetentionDays,
     });
   }
@@ -61,11 +63,17 @@ export async function handler(event: ConnectContactFlowEvent): Promise<ConnectCo
       result: "SCHEDULED",
       callbackId: outcome.callbackId,
       scheduledFor: outcome.scheduledFor,
+      scheduledForLocal: outcome.scheduledForLocal,
     };
   } catch (err) {
     if (err instanceof ValidationError) {
-      log("warn", "Callback request rejected", { contactId: contact.ContactId, error: err.message });
-      return { result: "INVALID", reason: err.message };
+      log("warn", "Callback request rejected", {
+        contactId: contact.ContactId,
+        reason: err.code,
+        error: err.message,
+      });
+      // Newer checks carry a code the flow branches on; older ones only have a message.
+      return { result: "INVALID", reason: err.code ?? err.message };
     }
     log("error", "Failed to schedule callback", {
       contactId: contact.ContactId,

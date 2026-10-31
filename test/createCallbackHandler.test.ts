@@ -1,5 +1,5 @@
 import type { ConnectContactFlowEvent } from "aws-lambda";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { handler, setServiceForTesting } from "../src/handlers/createCallback.js";
 import type { CallbackService } from "../src/lib/callbackService.js";
 import { ValidationError } from "../src/lib/validation.js";
@@ -34,6 +34,7 @@ describe("createCallback handler", () => {
     const createCallback = fakeService(async () => ({
       callbackId: "cb-123",
       scheduledFor: "2026-11-02T10:15:00.000Z",
+      scheduledForLocal: "Monday 2 November at 10:15",
       alreadyExisted: false,
     }));
 
@@ -49,6 +50,7 @@ describe("createCallback handler", () => {
       result: "SCHEDULED",
       callbackId: "cb-123",
       scheduledFor: "2026-11-02T10:15:00.000Z",
+      scheduledForLocal: "Monday 2 November at 10:15",
     });
   });
 
@@ -56,6 +58,7 @@ describe("createCallback handler", () => {
     const createCallback = fakeService(async () => ({
       callbackId: "cb-123",
       scheduledFor: "2026-11-02T16:00:00.000Z",
+      scheduledForLocal: "Monday 2 November at 16:00",
       alreadyExisted: false,
     }));
 
@@ -82,11 +85,55 @@ describe("createCallback handler", () => {
     });
   });
 
+  it("returns the machine-readable reason code when a validation error has one", async () => {
+    fakeService(async () => {
+      throw new ValidationError("Preferred callback time is outside callback hours", "OUTSIDE_CALLBACK_HOURS");
+    });
+
+    expect(await handler(event({ preferredTime: "2026-11-01T10:00:00Z" }))).toEqual({
+      result: "INVALID",
+      reason: "OUTSIDE_CALLBACK_HOURS",
+    });
+  });
+
   it("returns ERROR without leaking details for unexpected failures", async () => {
     fakeService(async () => {
       throw new Error("ProvisionedThroughputExceededException");
     });
 
     expect(await handler(event())).toEqual({ result: "ERROR", reason: "INTERNAL_ERROR" });
+  });
+
+  describe("with misconfigured callback hours", () => {
+    const REQUIRED_ENV = {
+      CALLBACKS_TABLE: "callbacks-test",
+      CONNECT_INSTANCE_ID: "instance-1",
+      OUTBOUND_CONTACT_FLOW_ID: "flow-1",
+      DISPATCH_FUNCTION_ARN: "arn:aws:lambda:eu-west-2:111111111111:function:dispatch",
+      SCHEDULER_ROLE_ARN: "arn:aws:iam::111111111111:role/scheduler",
+    };
+    const touched = [...Object.keys(REQUIRED_ENV), "CALLBACK_HOURS"];
+
+    afterEach(() => {
+      for (const key of touched) delete process.env[key];
+      setServiceForTesting(undefined);
+    });
+
+    it("returns ERROR and logs the config problem instead of throwing out of the flow", async () => {
+      Object.assign(process.env, REQUIRED_ENV, { CALLBACK_HOURS: "mon-fri=8am-8pm" });
+      setServiceForTesting(undefined); // force getService() to run loadConfig()
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        expect(await handler(event())).toEqual({ result: "ERROR", reason: "INTERNAL_ERROR" });
+        expect(errorLog).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(errorLog.mock.calls[0][0])).toMatchObject({
+          message: "Failed to schedule callback",
+          error: 'Invalid CALLBACK_HOURS: bad time range "8am-8pm" (expected HH:MM-HH:MM)',
+        });
+      } finally {
+        errorLog.mockRestore();
+      }
+    });
   });
 });

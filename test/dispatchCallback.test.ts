@@ -5,6 +5,7 @@ import { mockClient } from "aws-sdk-client-mock";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { handler, setDepsForTesting } from "../src/handlers/dispatchCallback.js";
 import type { AppConfig } from "../src/lib/config.js";
+import { DEFAULT_CALLBACK_HOURS } from "../src/lib/defaultCallbackHours.js";
 import { CallbackRepository } from "../src/lib/repository.js";
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -18,6 +19,8 @@ const config: AppConfig = {
   schedulerRoleArn: "n/a",
   scheduleGroupName: "connect-callbacks-test",
   defaultCallbackDelayMinutes: 15,
+  maxBookingDaysAhead: 7,
+  callbackHours: DEFAULT_CALLBACK_HOURS,
   recordRetentionDays: 30,
 };
 
