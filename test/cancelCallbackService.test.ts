@@ -3,7 +3,7 @@ import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from "@aws-sdk/li
 import { DeleteScheduleCommand, ResourceNotFoundException, SchedulerClient } from "@aws-sdk/client-scheduler";
 import { mockClient } from "aws-sdk-client-mock";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CancelCallbackService } from "../src/lib/cancelCallbackService.js";
+import { CancelCallbackService, CancelCallbacksError } from "../src/lib/cancelCallbackService.js";
 import { CallbackRepository } from "../src/lib/repository.js";
 import { CallbackScheduler } from "../src/lib/scheduler.js";
 import type { CallbackRecord } from "../src/lib/types.js";
@@ -88,12 +88,21 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
     const result = await makeService().cancelForPhoneNumber(PHONE);
 
-    expect(result).toEqual({ cancelledCount: 1 });
+    expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
     expect(transitions()).toEqual([{ callbackId: "cb-1", from: "SCHEDULED", to: "CANCELLED" }]);
     expect(deletedSchedules()).toEqual(["callback-cb-1"]);
     expect(schedulerMock.commandCalls(DeleteScheduleCommand)[0].args[0].input.GroupName).toBe(
       "connect-callbacks-test",
     );
+  });
+
+  it("deletes the retry schedule, not the original, for a callback waiting on a retry", async () => {
+    ddbMock.on(QueryCommand).resolves({ Items: [{ ...record("cb-1"), attempts: 2, failureReason: "Rate exceeded" }] });
+
+    const result = await makeService().cancelForPhoneNumber(PHONE);
+
+    expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
+    expect(deletedSchedules()).toEqual(["callback-cb-1-retry-2"]);
   });
 
   it("marks the record CANCELLED before deleting the schedule", async () => {
@@ -118,7 +127,7 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
     const result = await makeService().cancelForPhoneNumber(PHONE);
 
-    expect(result).toEqual({ cancelledCount: 3 });
+    expect(result).toEqual({ cancelledCount: 3, scheduleDeleteFailures: 0 });
     expect(transitions().map((t) => t.callbackId)).toEqual(["cb-1", "cb-2", "cb-3"]);
     expect(deletedSchedules()).toEqual(["callback-cb-1", "callback-cb-2", "callback-cb-3"]);
   });
@@ -128,7 +137,7 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
     const result = await makeService().cancelForPhoneNumber(PHONE);
 
-    expect(result).toEqual({ cancelledCount: 0 });
+    expect(result).toEqual({ cancelledCount: 0, scheduleDeleteFailures: 0 });
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
     expect(schedulerMock.commandCalls(DeleteScheduleCommand)).toHaveLength(0);
   });
@@ -157,7 +166,7 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
     const result = await makeService().cancelForPhoneNumber(PHONE);
 
-    expect(result).toEqual({ cancelledCount: 2 });
+    expect(result).toEqual({ cancelledCount: 2, scheduleDeleteFailures: 0 });
     expect(ddbMock.commandCalls(QueryCommand)[1].args[0].input.ExclusiveStartKey).toEqual({ callbackId: "cb-1" });
   });
 
@@ -182,19 +191,25 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
   });
 
   describe("callbacks that must not be touched", () => {
-    it("ignores DISPATCHED, FAILED and CANCELLED records even if the index returns them", async () => {
+    it("ignores DISPATCHING, DISPATCHED, FAILED and CANCELLED records even if the index returns them", async () => {
       ddbMock.on(QueryCommand).resolves({
-        Items: [record("cb-done", "DISPATCHED"), record("cb-live"), record("cb-failed", "FAILED"), record("cb-gone", "CANCELLED")],
+        Items: [
+          record("cb-calling", "DISPATCHING"),
+          record("cb-done", "DISPATCHED"),
+          record("cb-live"),
+          record("cb-failed", "FAILED"),
+          record("cb-gone", "CANCELLED"),
+        ],
       });
 
       const result = await makeService().cancelForPhoneNumber(PHONE);
 
-      expect(result).toEqual({ cancelledCount: 1 });
+      expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
       expect(transitions()).toEqual([{ callbackId: "cb-live", from: "SCHEDULED", to: "CANCELLED" }]);
       expect(deletedSchedules()).toEqual(["callback-cb-live"]);
     });
 
-    it("does not count or delete the schedule for a callback dispatched between the query and the update", async () => {
+    it("does not count or delete the schedule for a callback claimed by a dispatch between the query and the update", async () => {
       ddbMock.on(QueryCommand).resolves({ Items: [record("cb-racing"), record("cb-live")] });
       ddbMock
         .on(UpdateCommand, { Key: { callbackId: "cb-racing" } })
@@ -202,7 +217,7 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
       const result = await makeService().cancelForPhoneNumber(PHONE);
 
-      expect(result).toEqual({ cancelledCount: 1 });
+      expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
       expect(deletedSchedules()).toEqual(["callback-cb-live"]);
     });
 
@@ -222,7 +237,7 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
 
       const result = await makeService().cancelForPhoneNumber(PHONE);
 
-      expect(result).toEqual({ cancelledCount: 1 });
+      expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
       expect(transitions()).toEqual([{ callbackId: "cb-1", from: "SCHEDULED", to: "CANCELLED" }]);
       expect(logSpies.error).not.toHaveBeenCalled();
     });
@@ -243,26 +258,105 @@ describe("CancelCallbackService.cancelForPhoneNumber", () => {
     });
   });
 
-  describe("failures", () => {
-    it("keeps going after one callback fails, then reports the failure", async () => {
+  describe("status update failures", () => {
+    it("keeps going after one callback fails, then throws a CancelCallbacksError carrying the count", async () => {
       ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1"), record("cb-2"), record("cb-3")] });
       ddbMock.on(UpdateCommand, { Key: { callbackId: "cb-2" } }).rejects(new Error("ProvisionedThroughputExceededException"));
 
-      await expect(makeService().cancelForPhoneNumber(PHONE)).rejects.toThrow(
-        /Failed to cancel 1 of 3 callbacks \(2 cancelled\)/,
-      );
+      const err = await makeService().cancelForPhoneNumber(PHONE).catch((e: unknown) => e);
 
+      expect(err).toBeInstanceOf(CancelCallbacksError);
+      expect(err).toMatchObject({
+        message: "Failed to cancel 1 of 3 callbacks (2 cancelled)",
+        cancelledCount: 2,
+        errors: [expect.objectContaining({ message: "ProvisionedThroughputExceededException" })],
+      });
+      expect(transitions().map((t) => t.callbackId)).toEqual(["cb-1", "cb-2", "cb-3"]);
       expect(deletedSchedules()).toEqual(["callback-cb-1", "callback-cb-3"]);
+      expect(logSpies.error.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
+        expect.objectContaining({ callbackId: "cb-2", error: "ProvisionedThroughputExceededException" }),
+      ]);
     });
 
-    it("propagates an unexpected Scheduler error (not a not-found) as a failure", async () => {
+    it("reports a count of zero when the only callback's update fails", async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1")] });
+      ddbMock.on(UpdateCommand).rejects(new Error("ProvisionedThroughputExceededException"));
+
+      const err = await makeService().cancelForPhoneNumber(PHONE).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(CancelCallbacksError);
+      expect(err).toMatchObject({ cancelledCount: 0 });
+      expect(deletedSchedules()).toEqual([]);
+    });
+
+    it("throws the lookup error as-is (no count) when the index query fails", async () => {
+      ddbMock.on(QueryCommand).rejects(new Error("ProvisionedThroughputExceededException"));
+
+      const err = await makeService().cancelForPhoneNumber(PHONE).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(CancelCallbacksError);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+  });
+
+  describe("schedule delete failures", () => {
+    it("still counts the callback as cancelled and logs an error with the callbackId", async () => {
       ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1")] });
       schedulerMock.on(DeleteScheduleCommand).rejects(new Error("ThrottlingException"));
 
-      await expect(makeService().cancelForPhoneNumber(PHONE)).rejects.toThrow(/1 cancelled/);
-      // The record was still marked CANCELLED before the delete was attempted.
+      const result = await makeService().cancelForPhoneNumber(PHONE);
+
+      expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 1 });
+      // The record was marked CANCELLED before the delete was attempted, so the cancel stands.
       expect(transitions()).toEqual([{ callbackId: "cb-1", from: "SCHEDULED", to: "CANCELLED" }]);
+      expect(logSpies.error.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
+        expect.objectContaining({
+          message: "Callback cancelled but its schedule could not be deleted",
+          callbackId: "cb-1",
+          error: "ThrottlingException",
+        }),
+      ]);
     });
+
+    it("carries on to the remaining callbacks and counts each failed delete", async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1"), record("cb-2"), record("cb-3")] });
+      schedulerMock
+        .on(DeleteScheduleCommand, { Name: "callback-cb-1" })
+        .rejects(new Error("ThrottlingException"))
+        .on(DeleteScheduleCommand, { Name: "callback-cb-3" })
+        .rejects(new Error("ThrottlingException"));
+
+      const result = await makeService().cancelForPhoneNumber(PHONE);
+
+      expect(result).toEqual({ cancelledCount: 3, scheduleDeleteFailures: 2 });
+      expect(transitions().map((t) => t.callbackId)).toEqual(["cb-1", "cb-2", "cb-3"]);
+      expect(deletedSchedules()).toEqual(["callback-cb-1", "callback-cb-2", "callback-cb-3"]);
+    });
+
+    it("a not-found on delete is not a failure", async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1")] });
+      schedulerMock.on(DeleteScheduleCommand).rejects(scheduleNotFound());
+
+      const result = await makeService().cancelForPhoneNumber(PHONE);
+
+      expect(result).toEqual({ cancelledCount: 1, scheduleDeleteFailures: 0 });
+      expect(logSpies.error).not.toHaveBeenCalled();
+    });
+
+    it("a delete failure alongside an update failure: the update failure wins, the count is still right", async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1"), record("cb-2")] });
+      schedulerMock.on(DeleteScheduleCommand, { Name: "callback-cb-1" }).rejects(new Error("ThrottlingException"));
+      ddbMock.on(UpdateCommand, { Key: { callbackId: "cb-2" } }).rejects(new Error("ProvisionedThroughputExceededException"));
+
+      const err = await makeService().cancelForPhoneNumber(PHONE).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(CancelCallbacksError);
+      expect(err).toMatchObject({ cancelledCount: 1, message: "Failed to cancel 1 of 2 callbacks (1 cancelled)" });
+    });
+  });
+
+  describe("logging", () => {
 
     it("masks the number in log lines", async () => {
       ddbMock.on(QueryCommand).resolves({ Items: [record("cb-1")] });

@@ -84,7 +84,7 @@ export class CallbackRepository {
     callbackId: string,
     from: CallbackStatus,
     to: CallbackStatus,
-    extra: Partial<Pick<CallbackRecord, "outboundContactId" | "failureReason">> = {},
+    extra: Partial<Pick<CallbackRecord, "outboundContactId" | "failureReason" | "attempts">> = {},
     now: Date = new Date(),
   ): Promise<boolean> {
     const names: Record<string, string> = { "#status": "status", "#updatedAt": "updatedAt" };

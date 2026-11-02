@@ -18,6 +18,24 @@ Parameters:
     Type: Number
     Default: 7
     Description: Furthest ahead a customer may book a preferred callback time.
+  DispatchMaxAttempts:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: >-
+      Total StartOutboundVoiceContact attempts per callback, first try included, before the
+      record goes FAILED. 1 turns retries off.
+  DispatchRetryDelaySeconds:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    Description: Delay before each retry of a transient Connect error.
+  AlarmNotificationTopicArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional SNS topic ARN to notify when a callback fails permanently. Leave empty to
+      create the alarm with no actions.
 
   # Callback hours. Leave any of these empty to use the defaults compiled into
   # src/lib/defaultCallbackHours.ts. Values are validated when the function starts;
@@ -42,6 +60,9 @@ Parameters:
     Type: String
     Default: ""
     Description: Minutes before close during which no callback is scheduled. Defaults to 15.
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmNotificationTopicArn, ""]]
 
 Globals:
   Function:
@@ -122,7 +143,10 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: lambda:InvokeFunction
-                Resource: !GetAtt DispatchCallbackFunction.Arn
+                # Built from the fixed function name rather than !GetAtt: the dispatch
+                # function also needs this role's ARN (to schedule its own retries), and
+                # referencing each other directly would be circular.
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:connect-dispatch-callback-${Environment}"
 
   CreateCallbackFunction:
     Type: AWS::Serverless::Function
@@ -186,17 +210,30 @@ Resources:
       Principal: connect.amazonaws.com
       SourceArn: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}"
 
+  # Explicit log group so the metric filter below can reference it. On a stack that
+  # pre-dates this resource, Lambda will already have auto-created the group with this
+  # name and CloudFormation will refuse to create it: delete the auto-created group (or
+  # import it) before deploying.
+  DispatchCallbackLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/connect-dispatch-callback-${Environment}"
+
   DispatchCallbackFunction:
     Type: AWS::Serverless::Function
+    DependsOn: DispatchCallbackLogGroup
     Properties:
       FunctionName: !Sub "connect-dispatch-callback-${Environment}"
       Handler: dist/src/handlers/dispatchCallback.handler
       CodeUri: .
       Environment:
         Variables:
-          # Not used by dispatch, but loadConfig requires them.
-          DISPATCH_FUNCTION_ARN: "n/a"
-          SCHEDULER_ROLE_ARN: "n/a"
+          # Dispatch schedules its own retries, so it needs the same target details as create.
+          # Its own ARN is spelled out because a function can't !GetAtt itself.
+          DISPATCH_FUNCTION_ARN: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:connect-dispatch-callback-${Environment}"
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
+          DISPATCH_MAX_ATTEMPTS: !Ref DispatchMaxAttempts
+          DISPATCH_RETRY_DELAY_SECONDS: !Ref DispatchRetryDelaySeconds
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref CallbacksTable
@@ -204,6 +241,43 @@ Resources:
             - Effect: Allow
               Action: connect:StartOutboundVoiceContact
               Resource: !Sub "arn:aws:connect:${AWS::Region}:${AWS::AccountId}:instance/${ConnectInstanceId}/contact/*"
+            - Effect: Allow
+              Action: scheduler:CreateSchedule
+              Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${CallbackScheduleGroup}/*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerInvokeRole.Arn
+
+  # A callback that has run out of attempts, or hit a permanent Connect error, is logged
+  # by dispatchCallback with this exact message (FINAL_FAILURE_MESSAGE in the handler).
+  DispatchFinalFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchCallbackLogGroup
+      FilterPattern: '{ $.level = "error" && $.message = "Callback dispatch failed permanently" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub "ConnectCallbacks/${Environment}"
+          MetricName: DispatchFinalFailures
+          MetricValue: "1"
+          DefaultValue: 0
+
+  DispatchFinalFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "connect-callbacks-${Environment}-dispatch-final-failures"
+      AlarmDescription: >-
+        One or more scheduled callbacks could not be placed and will not be retried. Find
+        them in the dispatch function's logs with
+        filter message = "Callback dispatch failed permanently".
+      Namespace: !Sub "ConnectCallbacks/${Environment}"
+      MetricName: DispatchFinalFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmNotificationTopicArn], []]
 
 Outputs:
   CreateCallbackFunctionArn:

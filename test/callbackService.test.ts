@@ -68,6 +68,7 @@ describe("CallbackService.createCallback", () => {
       phoneNumber: "+447700900123",
       queueId: "queue-1",
       status: "SCHEDULED",
+      attempts: 0,
       scheduledFor: "2026-11-02T10:15:00.000Z",
       expiresAt: Math.floor(NOW.getTime() / 1000) + 30 * 86_400,
     });

@@ -73,6 +73,7 @@ export class CallbackService {
       queueId: input.queueId,
       scheduledFor: scheduledFor.toISOString(),
       status: "SCHEDULED",
+      attempts: 0,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       expiresAt: Math.floor(now.getTime() / 1000) + this.deps.recordRetentionDays * 86_400,

@@ -21,16 +21,26 @@ export class CallbackScheduler {
     private readonly client: SchedulerClient = new SchedulerClient({}),
   ) {}
 
-  static scheduleName(callbackId: string): string {
-    return `callback-${callbackId}`;
+  /**
+   * Name of the schedule that will fire next for a callback that has made `attempts`
+   * Connect attempts so far. The first is `callback-<id>`; retries get their own name
+   * because a one-time schedule deletes itself after firing (ActionAfterCompletion) and
+   * that deletion can still be pending when the retry is created.
+   */
+  static scheduleName(callbackId: string, attempts = 0): string {
+    return attempts === 0 ? `callback-${callbackId}` : `callback-${callbackId}-retry-${attempts}`;
   }
 
-  async scheduleDispatch(callbackId: string, when: Date): Promise<void> {
+  /**
+   * Creates the one-time schedule that invokes dispatchCallback at `when`. Pass the
+   * number of attempts made so far to schedule a retry (see scheduleName).
+   */
+  async scheduleDispatch(callbackId: string, when: Date, attempts = 0): Promise<void> {
     const payload: DispatchEvent = { callbackId };
 
     await this.client.send(
       new CreateScheduleCommand({
-        Name: CallbackScheduler.scheduleName(callbackId),
+        Name: CallbackScheduler.scheduleName(callbackId, attempts),
         GroupName: this.target.scheduleGroupName,
         ScheduleExpression: toSchedulerAtExpression(when),
         ScheduleExpressionTimezone: "UTC",
@@ -50,11 +60,11 @@ export class CallbackScheduler {
    * Deletes the one-time schedule for a callback. Returns false if it had already gone,
    * which is normal: schedules delete themselves after firing (ActionAfterCompletion).
    */
-  async cancelDispatch(callbackId: string): Promise<boolean> {
+  async cancelDispatch(callbackId: string, attempts = 0): Promise<boolean> {
     try {
       await this.client.send(
         new DeleteScheduleCommand({
-          Name: CallbackScheduler.scheduleName(callbackId),
+          Name: CallbackScheduler.scheduleName(callbackId, attempts),
           GroupName: this.target.scheduleGroupName,
         }),
       );

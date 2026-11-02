@@ -16,6 +16,10 @@ export interface AppConfig {
   callbackHours: CallbackHours;
   /** Records are kept for this many days after creation, then DynamoDB TTL removes them. */
   recordRetentionDays: number;
+  /** Total Connect attempts per callback (first try included) before the record goes FAILED. */
+  dispatchMaxAttempts: number;
+  /** Delay before each retry of a transient Connect error. */
+  dispatchRetryDelaySeconds: number;
 }
 
 function required(name: string): string {
@@ -36,6 +40,14 @@ function numberOr(name: string, fallback: number): number {
   return parsed;
 }
 
+function positiveIntegerOr(name: string, fallback: number): number {
+  const value = numberOr(name, fallback);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`Environment variable ${name} must be a whole number of at least 1, got "${process.env[name]}"`);
+  }
+  return value;
+}
+
 export function loadConfig(): AppConfig {
   return {
     tableName: required("CALLBACKS_TABLE"),
@@ -48,5 +60,7 @@ export function loadConfig(): AppConfig {
     maxBookingDaysAhead: numberOr("MAX_BOOKING_DAYS_AHEAD", 7),
     callbackHours: callbackHoursFromEnv(),
     recordRetentionDays: numberOr("RECORD_RETENTION_DAYS", 30),
+    dispatchMaxAttempts: positiveIntegerOr("DISPATCH_MAX_ATTEMPTS", 3),
+    dispatchRetryDelaySeconds: positiveIntegerOr("DISPATCH_RETRY_DELAY_SECONDS", 60),
   };
 }
