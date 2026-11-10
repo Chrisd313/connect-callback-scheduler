@@ -28,13 +28,13 @@ Inbound call ──▶ "Offer callback" contact flow
 
 ### Callback statuses
 
-| Status        | Meaning                                                                                   |
-|---------------|-------------------------------------------------------------------------------------------|
+| Status        | Meaning                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SCHEDULED`   | A one-time schedule will fire `dispatchCallback`: either the original (`attempts` 0) or a retry after a transient Connect error (`attempts` > 0, `failureReason` holds the last error). The only status a cancel acts on. |
-| `DISPATCHING` | `dispatchCallback` has claimed the record and is placing the outbound call. Normally lasts milliseconds. |
-| `DISPATCHED`  | Connect accepted the outbound call. `outboundContactId` and `attempts` are set.           |
-| `FAILED`      | The Connect request errored permanently, or transiently with no attempts left. `failureReason` holds the final error, `attempts` how many were made. Raises the alarm. |
-| `CANCELLED`   | Cancelled from `SCHEDULED` before any call was placed.                                    |
+| `DISPATCHING` | `dispatchCallback` has claimed the record and is placing the outbound call. Normally lasts milliseconds.                                                                                                                  |
+| `DISPATCHED`  | Connect accepted the outbound call. `outboundContactId` and `attempts` are set.                                                                                                                                           |
+| `FAILED`      | The Connect request errored permanently, or transiently with no attempts left. `failureReason` holds the final error, `attempts` how many were made. Raises the alarm.                                                    |
+| `CANCELLED`   | Cancelled from `SCHEDULED` before any call was placed.                                                                                                                                                                    |
 
 Dispatch and cancel can run at the same time, so both use conditional updates on `status`
 and exactly one of them wins:
@@ -109,7 +109,7 @@ errors are permanent and go straight to `FAILED`. Unknown errors count as transi
 attempts bounded, a wrong "transient" costs a couple of minutes, a wrong "permanent" costs
 the customer their callback.
 
-**No second call.** Our own state machine guarantees one *attempt* at a time and never an
+**No second call.** Our own state machine guarantees one _attempt_ at a time and never an
 attempt against a record that is `DISPATCHED`, `FAILED` or `CANCELLED`. For a transient
 error where Connect may in fact have placed the call (a timeout or 5xx after the request
 arrived), that guarantee rests on Connect's documented `ClientToken` idempotency: the retry
@@ -117,10 +117,10 @@ sends the same token and Connect returns the existing contact rather than dialli
 
 **Configuration** (see the parameter table under "Callback hours" for the pattern):
 
-| SAM parameter               | Env var                        | Default | Notes                                              |
-|-----------------------------|--------------------------------|---------|----------------------------------------------------|
-| `DispatchMaxAttempts`       | `DISPATCH_MAX_ATTEMPTS`        | `3`     | Total attempts, first try included. `1` turns retries off. |
-| `DispatchRetryDelaySeconds` | `DISPATCH_RETRY_DELAY_SECONDS` | `60`    | Fixed delay before each retry.                     |
+| SAM parameter               | Env var                        | Default | Notes                                                                                |
+| --------------------------- | ------------------------------ | ------- | ------------------------------------------------------------------------------------ |
+| `DispatchMaxAttempts`       | `DISPATCH_MAX_ATTEMPTS`        | `3`     | Total attempts, first try included. `1` turns retries off.                           |
+| `DispatchRetryDelaySeconds` | `DISPATCH_RETRY_DELAY_SECONDS` | `60`    | Fixed delay before each retry.                                                       |
 | `AlarmNotificationTopicArn` | n/a                            | empty   | SNS topic for the final-failure alarm. Empty means the alarm exists with no actions. |
 
 Both are validated at startup like the callback-hours settings: a bad value fails every
@@ -139,22 +139,22 @@ that moving it would surprise the customer more than help.
 
 ### Contact flow parameters
 
-| Parameter       | Required | Notes                                                                 |
-|-----------------|----------|-----------------------------------------------------------------------|
-| `callbackNumber`| No       | Defaults to the caller's number (`CustomerEndpoint.Address`).          |
-| `queueId`       | No       | Defaults to the queue the contact is currently in.                    |
-| `preferredTime` | No       | ISO-8601 with offset. If omitted we call back after the default delay. |
+| Parameter        | Required | Notes                                                                  |
+| ---------------- | -------- | ---------------------------------------------------------------------- |
+| `callbackNumber` | No       | Defaults to the caller's number (`CustomerEndpoint.Address`).          |
+| `queueId`        | No       | Defaults to the queue the contact is currently in.                     |
+| `preferredTime`  | No       | ISO-8601 with offset. If omitted we call back after the default delay. |
 
 ### Response
 
-| Field               | When        | Notes                                                                      |
-|---------------------|-------------|----------------------------------------------------------------------------|
-| `result`            | Always      | `SCHEDULED`, `INVALID` or `ERROR`.                                         |
-| `callbackId`        | `SCHEDULED` |                                                                            |
-| `scheduledFor`      | `SCHEDULED` | ISO-8601 UTC.                                                              |
-| `scheduledForLocal` | `SCHEDULED` | UK local time for text-to-speech, e.g. `Monday 2 November at 08:00`.       |
+| Field               | When        | Notes                                                                       |
+| ------------------- | ----------- | --------------------------------------------------------------------------- |
+| `result`            | Always      | `SCHEDULED`, `INVALID` or `ERROR`.                                          |
+| `callbackId`        | `SCHEDULED` |                                                                             |
+| `scheduledFor`      | `SCHEDULED` | ISO-8601 UTC.                                                               |
+| `scheduledForLocal` | `SCHEDULED` | UK local time for text-to-speech, e.g. `Monday 2 November at 08:00`.        |
 | `reason`            | `INVALID`   | `MISSING_DETAILS`, `OUTSIDE_CALLBACK_HOURS`, `TOO_FAR_AHEAD`, or a message. |
-| `reason`            | `ERROR`     | `INTERNAL_ERROR`.                                                          |
+| `reason`            | `ERROR`     | `INTERNAL_ERROR`.                                                           |
 
 ### Callback hours
 
@@ -170,13 +170,13 @@ Callbacks are only scheduled when agents are available. The defaults are:
 The defaults are compiled in from `src/lib/defaultCallbackHours.ts`, and each can be
 overridden per environment with a SAM parameter. Leave a parameter empty to keep the default.
 
-| SAM parameter                  | Env var                           | Format / example                                  |
-|--------------------------------|-----------------------------------|---------------------------------------------------|
+| SAM parameter                  | Env var                           | Format / example                                                                                |
+| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `CallbackHours`                | `CALLBACK_HOURS`                  | `mon-fri=08:00-20:00,sat=09:00-13:00`. Days not listed are closed; ranges may wrap (`sat-mon`). |
-| `CallbackClosedDates`          | `CALLBACK_CLOSED_DATES`           | `2026-01-01,2026-04-03,...`. Replaces the built-in list entirely. |
-| `CallbackTimeZone`             | `CALLBACK_TIMEZONE`               | IANA zone, e.g. `Europe/London`.                  |
-| `CallbackClosingBufferMinutes` | `CALLBACK_CLOSING_BUFFER_MINUTES` | Whole minutes, e.g. `15`.                         |
-| `MaxBookingDaysAhead`          | `MAX_BOOKING_DAYS_AHEAD`          | Whole days, default `7`.                          |
+| `CallbackClosedDates`          | `CALLBACK_CLOSED_DATES`           | `2026-01-01,2026-04-03,...`. Replaces the built-in list entirely.                               |
+| `CallbackTimeZone`             | `CALLBACK_TIMEZONE`               | IANA zone, e.g. `Europe/London`.                                                                |
+| `CallbackClosingBufferMinutes` | `CALLBACK_CLOSING_BUFFER_MINUTES` | Whole minutes, e.g. `15`.                                                                       |
+| `MaxBookingDaysAhead`          | `MAX_BOOKING_DAYS_AHEAD`          | Whole days, default `7`.                                                                        |
 
 For example, to extend Saturdays in prod without a code change:
 
@@ -207,15 +207,15 @@ Scheduler, so the schedule expression is correct either side of the BST clock ch
 
 Invoked from the inbound flow ("you have a callback booked, press 1 to cancel it").
 
-| Parameter        | Required | Notes                                                        |
-|------------------|----------|--------------------------------------------------------------|
+| Parameter        | Required | Notes                                                                        |
+| ---------------- | -------- | ---------------------------------------------------------------------------- |
 | `callbackNumber` | No       | Defaults to the caller's number (`CustomerEndpoint.Address`). Any UK format. |
 
-| Field            | When                                | Notes                                               |
-|------------------|-------------------------------------|-----------------------------------------------------|
-| `result`         | Always                              | `CANCELLED`, `NONE_FOUND`, `INVALID` or `ERROR`.    |
+| Field            | When                                    | Notes                                                                                                                                                                                      |
+| ---------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `result`         | Always                                  | `CANCELLED`, `NONE_FOUND`, `INVALID` or `ERROR`.                                                                                                                                           |
 | `cancelledCount` | `CANCELLED`, `NONE_FOUND`, some `ERROR` | Number of callbacks cancelled, as a string. Present on `ERROR` only when the failure was a status update (see below); absent when we failed before attempting any, e.g. the lookup itself. |
-| `reason`         | `INVALID`, `ERROR`                  | `MISSING_DETAILS`, `INTERNAL_ERROR`, or a message.  |
+| `reason`         | `INVALID`, `ERROR`                      | `MISSING_DETAILS`, `INTERNAL_ERROR`, or a message.                                                                                                                                         |
 
 What counts as success: a callback is cancelled once its record is `CANCELLED`. Deleting
 the schedule is best-effort after that. If the delete fails (throttling, say) the callback

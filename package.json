@@ -2,6 +2,7 @@
   "name": "connect-callback-scheduler",
   "version": "0.3.0",
   "private": true,
+  "license": "MIT",
   "description": "Schedules outbound callbacks for Amazon Connect customers who opt for a callback instead of waiting in queue.",
   "type": "module",
   "scripts": {
